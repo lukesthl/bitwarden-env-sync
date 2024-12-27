@@ -1,0 +1,19 @@
+{
+  "name": "bw-env-sync",
+  "version": "1.0.0",
+  "description": "Sync environment files with Bitwarden",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run ./src/index.ts",
+    "build": "bun build ./src/index.ts --compile --minify --sourcemap --outfile bw-env-sync"
+  },
+  "dependencies": {
+    "@bitwarden/cli": "^2024.12.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.7",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
