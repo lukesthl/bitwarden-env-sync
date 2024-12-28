@@ -20,7 +20,7 @@ bun run src/index.ts
 
 ### Option 2: Use pre-built binary
 
-1. Download the latest `bw-env-sync` binary from the [Releases](https://github.com/YOUR_USERNAME/bitwarden-env-sync/releases) page
+1. Download the latest `bw-env-sync` binary from the [Releases](https://github.com/lukesthl/bitwarden-env-sync/releases) page
 2. Make it executable:
 
 ```bash
