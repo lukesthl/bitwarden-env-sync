@@ -5,15 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "bun run ./src/index.ts",
-    "build": "bun build ./src/index.ts --compile --minify --sourcemap --outfile bw-env-sync"
+    "build": "bun build ./src/index.ts --compile --minify --sourcemap --outfile bw-env-sync",
+    "start": "bun run ./src/index.ts"
   },
   "dependencies": {
     "@bitwarden/cli": "^2024.12.0",
-    "commander": "^12.1.0",
-    "dotenv": "^16.4.7",
-    "glob": "^11.0.0"
+    "@clack/prompts": "^0.9.0",
+    "fast-glob": "^3.3.2"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "bun-types": "latest"
   }
 }

@@ -1,8 +1,16 @@
-import { program } from "commander";
-import { glob } from "glob";
-import { promises as fs } from "fs";
+import { spawn } from "bun";
+import { glob } from "fast-glob";
+import {
+  intro,
+  outro,
+  text,
+  isCancel,
+  cancel,
+  spinner,
+  password,
+  log,
+} from "@clack/prompts";
 import path from "path";
-import { execSync } from "child_process";
 
 interface BitwardenItem {
   id: string;
@@ -12,52 +20,48 @@ interface BitwardenItem {
   type: number;
 }
 
-interface ProgramOptions {
-  organization: string;
-  pattern: string;
-  server?: string;
-}
+const setBwSessionKey = async ({
+  password,
+}: {
+  password: string;
+}): Promise<void> => {
+  const unlockProc = spawn(
+    ["bw", "unlock", "--raw", "--passwordenv", "BW_PASSWORD", "--raw"],
+    {
+      stdio: ["inherit", "pipe", "inherit"],
+      env: {
+        BW_PASSWORD: password,
+        ...process.env,
+      },
+    }
+  );
 
-const getBwSession = async (): Promise<string> => {
-  try {
-    execSync("bw login --check", { stdio: "inherit" });
-  } catch (error) {
-    console.log("Please log in to Bitwarden:");
-    execSync("bw login", { stdio: "inherit" });
-  }
-
-  const session = execSync("bw unlock --raw", {
-    stdio: ["inherit", "pipe", "inherit"],
-  });
-
-  const sessionString = session.toString().trim();
+  const output = await new Response(unlockProc.stdout).text();
+  const sessionString = output.trim();
 
   if (!sessionString) {
     throw new Error("Empty Bitwarden session");
   }
 
   process.env.BW_SESSION = sessionString;
-
-  return sessionString;
 };
 
 const syncEnvFile = async (
   filePath: string,
-  sessionKey: string,
   organizationId: string
 ): Promise<void> => {
-  const fileContent = await fs.readFile(filePath, "utf-8");
+  const fileContent = await Bun.file(filePath).text();
   const itemName = `env-sync:${path.relative(process.cwd(), filePath)}`;
 
   try {
-    const response = execSync(`bw list items --search "${itemName}"`, {
-      stdio: ["pipe", "pipe", "pipe"],
+    const searchProc = spawn(["bw", "list", "items", "--search", itemName], {
       env: process.env,
     });
 
+    const searchOutput = await new Response(searchProc.stdout).text();
     let existingItems: BitwardenItem[] = [];
     try {
-      existingItems = JSON.parse(response.toString()) as BitwardenItem[];
+      existingItems = JSON.parse(searchOutput) as BitwardenItem[];
     } catch {}
 
     if (existingItems.length > 0) {
@@ -73,11 +77,11 @@ const syncEnvFile = async (
       const encodedData = Buffer.from(JSON.stringify(itemData)).toString(
         "base64"
       );
-      execSync(`bw edit item ${itemId} "${encodedData}"`, {
-        stdio: "inherit",
+      const editProc = spawn(["bw", "edit", "item", itemId, encodedData], {
+        stdio: ["inherit", "pipe", "pipe"],
         env: process.env,
       });
-      console.log(`Updated ${filePath} in Bitwarden`);
+      await editProc.exited;
     } else {
       const itemToCreate = {
         organizationId,
@@ -89,63 +93,130 @@ const syncEnvFile = async (
       const base64Data = Buffer.from(JSON.stringify(itemToCreate)).toString(
         "base64"
       );
-      execSync(`bw create item "${base64Data}"`, {
-        stdio: "inherit",
+      const createProc = spawn(["bw", "create", "item", base64Data], {
+        stdio: ["inherit", "pipe", "pipe"],
         env: process.env,
       });
-      console.log(`Created ${filePath} in Bitwarden`);
+      await createProc.exited;
     }
   } catch (error) {
     if (error instanceof Error) {
-      console.error(`Failed to sync ${filePath}:`, error.message);
+      log.error(`Failed to sync ${filePath}: ${error.message}`);
       if (error.stack) {
-        console.error("Stack trace:", error.stack);
+        log.error(error.stack);
       }
     } else {
-      console.error(`Failed to sync ${filePath}:`, error);
+      log.error(`Failed to sync ${filePath}: ${error}`);
     }
     throw error;
   }
 };
 
-const main = async (): Promise<void> => {
-  program
-    .name("bw-env-sync")
-    .description("Sync environment files with Bitwarden")
-    .requiredOption("-o, --organization <id>", "Bitwarden organization ID")
-    .option(
-      "-p, --pattern <pattern>",
-      "Glob pattern for env files",
-      "**/.env*(!(.example))"
-    )
-    .parse(process.argv);
+const tasks = async (
+  tasks: {
+    title: string;
+    task: () => Promise<void>;
+  }[]
+) => {
+  await Promise.all(
+    tasks.map(async (task) => {
+      log.info(task.title);
+      await task.task();
+      log.success(task.title);
+    })
+  );
+};
 
-  const { organization, pattern } = program.opts<ProgramOptions>();
+const main = async (): Promise<void> => {
+  intro(`Bitwarden Environment File Sync`);
 
   try {
-    const sessionKey = await getBwSession();
+    const args = process.argv;
+    let organizationId: string | undefined;
+    if (
+      args.find((arg) => arg.includes("--organization") || arg.includes("-o"))
+    ) {
+      const organization = args.find((arg) => arg.includes("--organization"));
+      organizationId =
+        organization?.split("=")[1] ?? args[args.indexOf("-o") + 1];
+    } else {
+      const organization = await text({
+        message: "Enter your Bitwarden organization ID",
+        validate(value: string) {
+          if (!value) return "Organization ID is required";
+          return;
+        },
+      });
+      if (isCancel(organization)) {
+        cancel("Operation cancelled");
+        process.exit(0);
+      }
+      organizationId = organization;
+    }
+    log.info(`Organization ID: ${organizationId}`);
 
-    const files = await glob(pattern, {
-      ignore: ["**/node_modules/**"],
-      dot: true,
+    const pattern = await text({
+      message: "Enter glob pattern for env files",
+      placeholder: "**/.env*(!(.example))",
+      initialValue: "**/.env*(!(.example))",
     });
 
+    if (isCancel(pattern)) {
+      cancel("Operation cancelled");
+      process.exit(0);
+    }
+    log.info("Getting Bitwarden session...");
+    const bwPassword = await password({
+      message: "Enter the Bitwarden password",
+    });
+    if (isCancel(bwPassword)) {
+      cancel("Operation cancelled");
+      process.exit(0);
+    }
+    await setBwSessionKey({ password: bwPassword });
+    const startTime = performance.now();
+    const searchSpinner = spinner();
+    searchSpinner.start("Searching for environment files...");
+    const files = await glob(pattern as string, {
+      ignore: [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.git/**",
+        "**/coverage/**",
+      ],
+      dot: true,
+      onlyFiles: true,
+      absolute: false,
+      stats: false,
+      followSymbolicLinks: false,
+    });
+    const endTime = performance.now();
+    const duration = (endTime - startTime).toFixed(0);
+
     if (files.length === 0) {
-      console.log("No environment files found");
+      searchSpinner.stop(`No environment files found`);
       return;
     }
-
-    console.log("Found environment files:", files);
-    await Promise.all(
-      files.map((file) => syncEnvFile(file, sessionKey, organization))
+    searchSpinner.stop(
+      `Found ${files.length} environment files in ${duration}ms`
     );
 
-    console.log("Sync completed successfully");
+    await tasks(
+      files.map((file) => ({
+        title: file,
+        task: async () => {
+          await syncEnvFile(file, organizationId);
+        },
+      }))
+    );
+
+    outro("Sync completed successfully");
   } catch (error) {
     if (error instanceof Error) {
-      console.error("Error:", error.message);
+      log.error(error.message);
     } else {
-      console.error("Error:", error);
+      log.error(error as string);
     }
     process.exit(1);
   }
